@@ -1,0 +1,50 @@
+name: racen-slack-stack
+
+services:
+  racen-retriever:
+    image: python:3.11-slim
+    container_name: racen_retriever
+    working_dir: /app
+    volumes:
+      - "J:/My Drive/Windsurf Projects/CascadeProjects/windsurf-project:/app"
+    environment:
+      - PGHOST=${PGHOST}
+      - PGPORT=${PGPORT}
+      - PGUSER=${PGUSER}
+      - PGPASSWORD=${PGPASSWORD}
+      - PGDATABASE=${PGDATABASE}
+      - PGOPTIONS=${PGOPTIONS}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - RERANK_TOP_N=${RERANK_TOP_N}
+      - FAST_MODE=${FAST_MODE}
+      - RETRIEVE_BACKOFF_ENABLE=${RETRIEVE_BACKOFF_ENABLE}
+      - RETRIEVE_BACKOFF_THRESHOLD=${RETRIEVE_BACKOFF_THRESHOLD}
+      - RETRIEVE_BACKOFF_SECONDARY=${RETRIEVE_BACKOFF_SECONDARY}
+      - ANSWER_SHORT=${ANSWER_SHORT}
+      - ANSWER_MAX_TOKENS=${ANSWER_MAX_TOKENS}
+      - ANSWER_CHUNK_CHAR_BUDGET=${ANSWER_CHUNK_CHAR_BUDGET}
+      # Optional allowlist:
+      # - RETRIEVE_SOURCE_ALLOWLIST=${RETRIEVE_SOURCE_ALLOWLIST}
+    command: >
+      bash -lc "
+        pip install -U pip &&
+        pip install fastapi uvicorn psycopg[binary] sentence-transformers &&
+        python -m uvicorn scripts.retriever_api:app --host 0.0.0.0 --port 8000
+      "
+
+  slack-bot:
+    image: node:20
+    container_name: racen_slack_bot
+    working_dir: /app
+    volumes:
+      - "J:/My Drive/Windsurf Projects/CascadeProjects/windsurf-project/slack-openai-bot:/app"
+    environment:
+      - SLACK_BOT_TOKEN=${SLACK_BOT_TOKEN}
+      - SLACK_APP_TOKEN=${SLACK_APP_TOKEN}
+      - SLACK_SIGNING_SECRET=${SLACK_SIGNING_SECRET}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - OPENAI_MODEL=${OPENAI_MODEL}
+      - RACEN_RETRIEVER_URL=http://racen-retriever:8000
+    depends_on:
+      - racen-retriever
+    command: bash -lc "npm install --no-audit --no-fund && node app.js"
