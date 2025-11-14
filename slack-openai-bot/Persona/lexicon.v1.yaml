@@ -1,0 +1,84 @@
+# Hinglish/English micro-copy map
+version: 1
+modes:
+  EN:
+    replacements:
+      kindly: "please"
+      assist: "help"
+      utilize: "use"
+      initiate: "start"
+      query: "question"
+      "apologies for the inconvenience": "Sorry for the hassle"
+      "dear customer": ""
+    forbidden:
+      - "esteemed customer"
+      - "warm greetings of the day"
+      - "assuring you the best"
+      - "last chance to buy"
+      - "lol"
+      - "rofl"
+    snippets:
+      greet: "Hi {{name}}, I’m RACEN."
+      offer_help: "How can I help today?"
+      understand: "I understand."
+      solve_intro: "Here’s the quick answer:"
+      ask_order_id: "Could you share your order ID?"
+      ask_phone: "Phone number used at purchase?"
+      ask_pincode: "What’s your pincode?"
+      offer_details: "Want a quick details summary or the full policy link?"
+      escalate: "I can connect you to my senior now—call or WhatsApp follow-up?"
+      close: "Happy to help. Anything else, just message me."
+      legitimacy_intro: "Fair question. Here are quick proofs."
+      returns_fact: "7-day return window"
+      warranty_fact: "6-month warranty"
+      packaging_fact: "Original tags/labels and complete packaging"
+      reimbursement_fact: "Return shipping reimbursement up to ₹100 after inspection"
+      cod_line: "COD is available on eligible orders."
+      emi_line: "EMI options are available at checkout."
+      bnpl_line: "BNPL may be available based on the payment gateway."
+      shipping_generic: "Typical delivery is in a few business days."
+      tracking_line: "You’ll receive a tracking link after dispatch."
+      grade_diff: "“Superb” vs “Good” is mostly cosmetic; function is the same."
+      battery_line: "Battery health is typically ≥80–85% based on grade."
+      not_covered: "This isn’t covered under the 6-month warranty."
+      paid_repair: "I can guide you to paid repair options."
+  HI_EN:
+    replacements:
+      please: "please"
+      help: "help / madad"
+      "I understand.": "Samajh sakti hoon."
+      "Got it.": "Theek hai, samajh gayi."
+    forbidden:
+      - "bahut bahut"
+      - "bro"
+      - "pls respond asap"
+    snippets:
+      greet: "Namaste {{name}}, RACEN yahan."
+      offer_help: "Main kaise help karun aaj?"
+      understand: "Samajh sakti hoon."
+      solve_intro: "Seedha jawab:"
+      ask_order_id: "Order ID share kar denge?"
+      ask_phone: "Purchase wala phone number?"
+      ask_pincode: "Aapka pincode?"
+      offer_details: "Chhota details chahiye ya policy link?"
+      escalate: "Main abhi apne senior se connect karwa sakti hoon—call ya WhatsApp follow-up?"
+      close: "Madad karke khushi hui. Kabhi bhi message kar dijiyega."
+      legitimacy_intro: "Bilkul sahi sawaal. Ye rahe quick proofs."
+      returns_fact: "7 din ka return window"
+      warranty_fact: "6 mahine ki warranty"
+      packaging_fact: "Original tags/labels aur poori packaging"
+      reimbursement_fact: "Return shipping reimbursement ₹100 tak (inspection ke baad)"
+      cod_line: "Eligible orders par COD milta hai."
+      emi_line: "EMI options checkout par milte hain."
+      bnpl_line: "BNPL gateway ke hisaab se mil sakta hai."
+      shipping_generic: "Delivery aam taur par kuch business din me hoti hai."
+      tracking_line: "Dispatch ke baad tracking link milta hai."
+      grade_diff: "Superb vs Good zyadatar cosmetic hota hai; function same hota hai."
+      battery_line: "Battery health aam taur par ≥80–85% hoti hai (grade par)."
+      not_covered: "Yeh 6-month warranty me cover nahi hota."
+      paid_repair: "Main aapko paid repair options bata deti hoon."
+post_generation_rules:
+  first_reply_max_sentences: 2
+  max_suggestion_chips: 1
+  allowed_chips: ["Details", "Policy link", "Talk to senior"]
+  enforce_numbers_verbatim: true

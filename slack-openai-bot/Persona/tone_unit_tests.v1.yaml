@@ -1,0 +1,74 @@
+# input→expected first reply (the 10 checks)
+version: 1
+tests:
+  - name: return_policy_en
+    input: "What’s your return policy?"
+    mode: EN
+    must_include:
+      - "7-day"
+      - "original tags/labels"
+      - "complete packaging"
+    max_sentences_first_reply: 2
+    allow_chip: true
+
+  - name: return_policy_hinglish
+    input: "Return kitne din me ho sakta hai?"
+    mode: HI_EN
+    must_include:
+      - "7 din"
+      - "original tags/labels"
+      - "poori packaging"
+    max_sentences_first_reply: 2
+    allow_chip: true
+
+  - name: legitimacy
+    input: "Are you legit? How do I trust this site?"
+    mode: EN
+    must_include:
+      - "7-day returns"
+      - "6-month warranty"
+      - "payments"
+    max_sentences_first_reply: 2
+    allow_chip: true
+
+  - name: warranty_coverage
+    input: "Mic not working—covered?"
+    mode: EN
+    must_include:
+      - "6-month warranty"
+    max_sentences_first_reply: 2
+    allow_chip: true
+
+  - name: not_covered
+    input: "Cracked screen—warranty valid?"
+    mode: EN
+    must_include:
+      - "This isn’t covered"
+      - "paid repair options"
+    max_sentences_first_reply: 2
+    allow_chip: false
+
+  - name: shipping_eta_generic
+    input: "Delivery time to 122002?"
+    mode: EN
+    must_include:
+      - "Typical delivery"
+    max_sentences_first_reply: 2
+    allow_chip: true
+
+  - name: payments_cod
+    input: "COD hai?"
+    mode: HI_EN
+    must_include:
+      - "COD"
+    max_sentences_first_reply: 2
+    allow_chip: true
+
+  - name: frustration_escalation
+    input: "This is useless, I’ve asked twice."
+    mode: EN
+    must_include:
+      - "Sorry for the hassle"
+      - "support executive"
+    max_sentences_first_reply: 2
+    allow_chip: true

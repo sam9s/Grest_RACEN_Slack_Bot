@@ -2,6 +2,9 @@
   "name": "slack-openai-bot",
   "version": "0.1.0",
   "type": "module",
+  "scripts": {
+    "persona:test": "python ../../Windsurf_Project/scripts/persona_test.py"
+  },
   "dependencies": {
     "@slack/bolt": "^3.17.0",
     "dotenv": "^16.4.5",

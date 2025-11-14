@@ -24,11 +24,20 @@ const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 
 // Answer API endpoint (Python FastAPI) that wraps our evaluated pipeline
 const ANSWER_URL = process.env.RACEN_ANSWER_URL || "http://127.0.0.1:8000";
+const SUPPORT_PHONE = (process.env.SUPPORT_PHONE || "").trim();
+const SUPPORT_EMAIL = (process.env.SUPPORT_EMAIL || "").trim();
+
+// Track last assistant answer per thread to help the backend/LLM interpret short acknowledgements
+const lastAnswerByThread = new Map();
 
 function allowlistForPreset(preset) {
   const p = (preset || "").toLowerCase();
+  if (p === "all") return ""; // full-site: no source filter
   if (p === "shipping") return "/policies/shipping/policy,/policies/refund/policy";
   if (p === "faqs_shipping") return "/pages/faqs,/policies/shipping/policy,/policies/refund/policy";
+  if (p === "faqs_warranty_policies") {
+    return "/pages/faqs,/pages/warranty,/policies/terms/of/service,/policies/refund/policy,/policies/shipping/policy";
+  }
   if (p === "all_subset") return "/pages/faqs,/policies/shipping/policy,/policies/refund/policy";
   // default to FAQs
   return "/pages/faqs";
@@ -37,16 +46,25 @@ function allowlistForPreset(preset) {
 app.event("app_mention", async ({ event, say }) => {
   try {
     const q = (event.text || "").replace(/<@[^>]+>/, "").trim();
+    const threadId = event.thread_ts || event.ts;
 
-    // Choose allowlist preset via env (SLACK_ALLOWLIST_PRESET = faqs|shipping)
+    // Choose allowlist. If RETRIEVE_SOURCE_ALLOWLIST is set, honor it.
+    // Otherwise derive from SLACK_ALLOWLIST_PRESET.
     const preset = process.env.SLACK_ALLOWLIST_PRESET || "faqs";
-    const allowlist = allowlistForPreset(preset);
+    const envAllow = (process.env.RETRIEVE_SOURCE_ALLOWLIST || "").trim();
+    const allowlist = envAllow ? envAllow : allowlistForPreset(preset);
 
     // Call the Python Answer API for grounded answers with citations
     const resp = await fetch(`${ANSWER_URL.replace(/\/$/, "")}/answer`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ question: q, allowlist, k: 10, short: true })
+      body: JSON.stringify({
+        question: q,
+        allowlist,
+        k: 18,
+        short: true,
+        previous_answer: threadId ? (lastAnswerByThread.get(threadId) || "") : ""
+      })
     });
 
     if (!resp.ok) {
@@ -79,11 +97,19 @@ app.event("app_mention", async ({ event, say }) => {
       .join("");
 
     await say({ text });
+
+    // Remember this answer for the thread
+    if (threadId && answer) {
+      lastAnswerByThread.set(threadId, answer);
+    }
   } catch (err) {
     console.error(err);
     await say("Error handling that message.");
   }
 });
+
+// Note: We intentionally do not hardcode an acknowledgement regex handler here.
+// The backend/LLM interprets acknowledgements and responds appropriately.
 
 // Start the app (Socket Mode; no public HTTP needed)
 app.start(process.env.PORT || 3000).then(() => {
