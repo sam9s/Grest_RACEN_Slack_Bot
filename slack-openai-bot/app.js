@@ -21,6 +21,8 @@ const app = new App({
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
+const SHOW_CITES = (process.env.SLACK_SHOW_CITATIONS || "1").trim() !== "0";
+const SHOW_RIBBON = (process.env.ANSWER_DEBUG_FLAGS || "0").trim() !== "0";
 
 // Answer API endpoint (Python FastAPI) that wraps our evaluated pipeline
 const ANSWER_URL = process.env.RACEN_ANSWER_URL || "http://127.0.0.1:8000";
@@ -29,6 +31,11 @@ const SUPPORT_EMAIL = (process.env.SUPPORT_EMAIL || "").trim();
 
 // Track last assistant answer per thread to help the backend/LLM interpret short acknowledgements
 const lastAnswerByThread = new Map();
+// Track repeated fallbacks per thread to escalate gracefully to human support
+const fallbackCountByThread = new Map();
+const escalatedThreads = new Set();
+// Remember last active thread per (channel,user) to keep context even if user forgets to click "Reply in thread"
+const lastThreadByChannelUser = new Map(); // key: `${channel}:${user}` -> { thread_ts, updated_at_ms }
 
 function allowlistForPreset(preset) {
   const p = (preset || "").toLowerCase();
@@ -46,7 +53,20 @@ function allowlistForPreset(preset) {
 app.event("app_mention", async ({ event, say }) => {
   try {
     const q = (event.text || "").replace(/<@[^>]+>/, "").trim();
-    const threadId = event.thread_ts || event.ts;
+    const channel = event.channel;
+    const user = event.user;
+    const key = `${channel}:${user}`;
+    const now = Date.now();
+    const FRESH_MS = 10 * 60 * 1000; // 10 minutes
+    let threadId = event.thread_ts || null;
+    if (!threadId) {
+      const last = lastThreadByChannelUser.get(key);
+      if (last && (now - last.updated_at_ms) < FRESH_MS && last.thread_ts) {
+        threadId = last.thread_ts;
+      } else {
+        threadId = event.ts; // start a new thread anchored at this message
+      }
+    }
 
     // Choose allowlist. If RETRIEVE_SOURCE_ALLOWLIST is set, honor it.
     // Otherwise derive from SLACK_ALLOWLIST_PRESET.
@@ -63,7 +83,8 @@ app.event("app_mention", async ({ event, say }) => {
         allowlist,
         k: 18,
         short: true,
-        previous_answer: threadId ? (lastAnswerByThread.get(threadId) || "") : ""
+        previous_answer: threadId ? (lastAnswerByThread.get(threadId) || "") : "",
+        previous_user: q
       })
     });
 
@@ -81,26 +102,68 @@ app.event("app_mention", async ({ event, say }) => {
     const citations = Array.isArray(data.citations) ? data.citations : [];
     const ribbon = data.settings_summary || "";
 
-    const citationsBlock = citations.length
+    const citationsBlock = SHOW_CITES && citations.length
       ? citations
           .slice(0, 6)
           .map((c, i) => `[$${i + 1}] ${c.url} (lines ${c.start_line}-${c.end_line})`)
           .join("\n")
       : "";
 
-    const text = [
-      answer,
-      citationsBlock ? "\n\n*Citations:*\n" + citationsBlock : "",
-      ribbon ? `\n\n_${ribbon}_` : ""
-    ]
-      .filter(Boolean)
-      .join("");
+    // Build base text without ribbon for correct ordering (we may inject escalation before ribbon)
+    let baseParts = [answer];
+    if (SHOW_CITES && citationsBlock) baseParts.push("\n\n*Citations:*\n" + citationsBlock);
+    let text = baseParts.filter(Boolean).join("");
+    try {
+      const ribbonFallback = /\bfallback=(\d)/.test(ribbon) && /\bfallback=1\b/.test(ribbon);
+      const ans = (answer || "").trim();
+      const prefixFallback = (
+        ans.startsWith("I couldn’t find an exact line on that") ||
+        ans.startsWith("I couldn’t find the exact info") ||
+        ans.startsWith("Exact info nahi mila") ||
+        ans.startsWith("Exact line nahi mila")
+      );
+      const isFallback = ribbonFallback || prefixFallback;
+      if (threadId) {
+        if (isFallback) {
+          const prev = fallbackCountByThread.get(threadId) || 0;
+          const next = prev + 1;
+          fallbackCountByThread.set(threadId, next);
+          // Escalate after 3 repeated fallbacks and only once per thread
+          if (next >= 3 && !escalatedThreads.has(threadId)) {
+            const toneMatch = /\btone=([A-Z_]+|[a-z_]+)\b/.exec(ribbon);
+            const tone = toneMatch ? toneMatch[1].toLowerCase() : "neutral";
+            const useEmoji = tone !== "upset";
+            const emoji = useEmoji ? " 🙂" : "";
+            const lines = [
+              `\n\nIf you want, I can connect you to our support team.${emoji}`,
+              SUPPORT_PHONE ? `Phone: ${SUPPORT_PHONE}` : "",
+              SUPPORT_EMAIL ? `Email: ${SUPPORT_EMAIL}` : "",
+              "Contact link: https://grest.in/pages/contact-us",
+            ].filter(Boolean);
+            // Replace the fallback body with a concise escalation-only block to avoid repetition
+            text = lines.join("\n");
+            escalatedThreads.add(threadId);
+          }
+        } else {
+          // Reset the counter when we get a non-fallback answer
+          fallbackCountByThread.set(threadId, 0);
+        }
+      }
+    } catch {}
 
-    await say({ text });
+    // Append the ribbon last so escalation appears before it
+    if ((SHOW_CITES || SHOW_RIBBON) && ribbon) {
+      text = `${text}\n\n_${ribbon}_`;
+    }
+
+    // Reply within the same thread to preserve conversation context for ACK detection
+    await say({ text, thread_ts: threadId });
 
     // Remember this answer for the thread
     if (threadId && answer) {
       lastAnswerByThread.set(threadId, answer);
+      // update last-thread mapping for this user in this channel
+      lastThreadByChannelUser.set(key, { thread_ts: threadId, updated_at_ms: now });
     }
   } catch (err) {
     console.error(err);
