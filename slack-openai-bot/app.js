@@ -25,7 +25,7 @@ const SHOW_CITES = (process.env.SLACK_SHOW_CITATIONS || "1").trim() !== "0";
 const SHOW_RIBBON = (process.env.ANSWER_DEBUG_FLAGS || "0").trim() !== "0";
 
 // Answer API endpoint (Python FastAPI) that wraps our evaluated pipeline
-const ANSWER_URL = process.env.RACEN_ANSWER_URL || "http://127.0.0.1:8000";
+const ANSWER_URL = process.env.RACEN_ANSWER_URL || "http://127.0.0.1:8011";
 const SUPPORT_PHONE = (process.env.SUPPORT_PHONE || "").trim();
 const SUPPORT_EMAIL = (process.env.SUPPORT_EMAIL || "").trim();
 
@@ -36,6 +36,152 @@ const fallbackCountByThread = new Map();
 const escalatedThreads = new Set();
 // Remember last active thread per (channel,user) to keep context even if user forgets to click "Reply in thread"
 const lastThreadByChannelUser = new Map(); // key: `${channel}:${user}` -> { thread_ts, updated_at_ms }
+
+// Global shortcut to ingest a grest.in URL via modal and DM status updates
+app.shortcut("racen_ingest_url", async ({ ack, body, client }) => {
+  await ack();
+  await client.views.open({
+    trigger_id: body.trigger_id,
+    view: {
+      type: "modal",
+      callback_id: "racen_ingest_url_submit",
+      title: { type: "plain_text", text: "Ingest URL" },
+      submit: { type: "plain_text", text: "Ingest" },
+      close: { type: "plain_text", text: "Cancel" },
+      blocks: [
+        {
+          type: "input",
+          block_id: "url_block",
+          label: { type: "plain_text", text: "grest.in URL" },
+          element: {
+            type: "plain_text_input",
+            action_id: "url_value",
+            placeholder: { type: "plain_text", text: "https://grest.in/products/..." }
+          }
+        }
+      ]
+    }
+  });
+});
+
+app.view("racen_ingest_url_submit", async ({ ack, body, view, client }) => {
+  await ack();
+  const userId = body.user.id;
+  const raw = view.state.values?.url_block?.url_value?.value || "";
+  let target = (raw || "").trim();
+  console.debug(`[ingest] submit by ${userId} url=${target}`);
+  try {
+    const u = new URL(target);
+    if (!/grest\.in$/i.test(u.hostname)) throw new Error("Only grest.in URLs are allowed");
+  } catch (e) {
+    // DM user about invalid URL
+    try {
+      const im = await client.conversations.open({ users: userId });
+      await client.chat.postMessage({ channel: im.channel.id, text: `Invalid URL: ${target}` });
+    } catch (err) {
+      console.error(`[ingest] failed to DM invalid URL notice`, err);
+    }
+    return;
+  }
+  // Enqueue ingestion
+  let jobId = "";
+  try {
+    const resp = await fetch(`${ANSWER_URL.replace(/\/$/, "")}/ingest/url`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ url: target, requested_by: userId })
+    });
+    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+    const data = await resp.json();
+    jobId = data.job_id || "";
+    console.debug(`[ingest] enqueued job_id=${jobId}`);
+  } catch (e) {
+    console.error(`[ingest] enqueue failed`, e);
+    try {
+      const im = await client.conversations.open({ users: userId });
+      await client.chat.postMessage({ channel: im.channel.id, text: `Failed to enqueue ingest: ${e}` });
+    } catch (err) {
+      console.error(`[ingest] failed to DM enqueue error`, err);
+    }
+    return;
+  }
+  // DM status updates by polling briefly
+  let dm = null;
+  try {
+    const im = await client.conversations.open({ users: userId });
+    dm = im.channel.id;
+  } catch (err) {
+    console.error(`[ingest] conversations.open failed`, err);
+    return;
+  }
+  let msgTs = null;
+  try {
+    // Do NOT include the URL here to avoid early unfurl above later status messages
+    const initial = await client.chat.postMessage({ channel: dm, text: `Accepted ingest\njob_id=${jobId}\nStage: queued` });
+    msgTs = initial.ts;
+  } catch (err) {
+    console.error(`[ingest] initial DM post failed`, err);
+    return;
+  }
+  let lastStatus = "";
+  let lastStage = "";
+  let transientErrors = 0;
+  const interval = setInterval(async () => {
+    try {
+      const s = await fetch(`${ANSWER_URL.replace(/\/$/, "")}/ingest/status/${jobId}`);
+      if (!s.ok) throw new Error(`status ${s.status}`);
+      const js = await s.json();
+      const stage = js.stage || "";
+      console.debug(`[ingest] poll job=${jobId} status=${js.status} stage=${stage}`);
+      const needStagePing = stage && stage !== lastStage && js.status !== "done" && js.status !== "error";
+      if (js.status !== lastStatus || stage !== lastStage) {
+        if (needStagePing) {
+          try {
+            await client.chat.postMessage({ channel: dm, text: `Stage: ${stage}` });
+          } catch (err) {
+            console.error(`[ingest] stage ping postMessage failed`, err);
+          }
+        }
+        lastStatus = js.status;
+        lastStage = stage;
+        const detail = js.detail ? `\n${js.detail}` : "";
+        const counts = (js.chunks_inserted || js.embeddings_inserted) ? `\nchunks=${js.chunks_inserted || "?"}, embeddings=${js.embeddings_inserted || "?"}` : "";
+        const text = `job_id=${jobId}\nStatus: ${js.status}${stage ? `\nStage: ${stage}` : ""}${detail}${counts}`;
+        // Skip updating the main message when we are at final states; we'll post a clean final summary instead
+        if (js.status !== "done" && js.status !== "error") {
+          try {
+            await client.chat.update({ channel: dm, ts: msgTs, text });
+          } catch (err) {
+            console.error(`[ingest] chat.update failed`, err);
+          }
+        }
+      }
+      if (js.status === "done" || js.status === "error") {
+        // Always send a final update to mark completion, even if no change detected in this tick
+        try {
+          // Remove URLs from the final summary so unfurl happens only on the separate URL message
+          const rawDetail = js.detail ? `\n${js.detail}` : "";
+          const safeDetail = rawDetail.replace(/https?:\/\/\S+/g, "").trimEnd();
+          const counts = (js.chunks_inserted || js.embeddings_inserted) ? `\nchunks=${js.chunks_inserted || "?"}, embeddings=${js.embeddings_inserted || "?"}` : "";
+          const finalText = `----------------\nStatus: ${js.status}${js.stage ? `\nStage: ${js.stage}` : ""}${safeDetail ? `\n${safeDetail}` : ""}${counts}`;
+          // Post a new final summary message so it appears below earlier pings
+          await client.chat.postMessage({ channel: dm, text: finalText });
+          // Then post the URL to trigger unfurl below all statuses
+          await client.chat.postMessage({ channel: dm, text: target });
+        } catch (err) {
+          console.error(`[ingest] final postMessage failed`, err);
+        }
+        clearInterval(interval);
+      }
+    } catch (err) {
+      transientErrors += 1;
+      console.error(`[ingest] status poll error (${transientErrors})`, err);
+      if (transientErrors >= 5) {
+        clearInterval(interval);
+      }
+    }
+  }, 2000);
+});
 
 function allowlistForPreset(preset) {
   const p = (preset || "").toLowerCase();
