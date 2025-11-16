@@ -72,7 +72,17 @@ app.event("app_mention", async ({ event, say }) => {
     // Otherwise derive from SLACK_ALLOWLIST_PRESET.
     const preset = process.env.SLACK_ALLOWLIST_PRESET || "faqs";
     const envAllow = (process.env.RETRIEVE_SOURCE_ALLOWLIST || "").trim();
-    const allowlist = envAllow ? envAllow : allowlistForPreset(preset);
+    let allowlist = envAllow ? envAllow : allowlistForPreset(preset);
+    // If the user pasted a grest.in URL, target that exact pathname to bias retrieval to the product page
+    try {
+      const urlMatch = (event.text || "").match(/https?:\/\/(?:www\.)?grest\.in\/[\S]+/i);
+      if (urlMatch && urlMatch[0]) {
+        const u = new URL(urlMatch[0]);
+        const pathOnly = u.pathname || "/";
+        // Override allowlist to the specific page (exclude query params for stability)
+        allowlist = pathOnly;
+      }
+    } catch {}
 
     // Call the Python Answer API for grounded answers with citations
     const resp = await fetch(`${ANSWER_URL.replace(/\/$/, "")}/answer`, {
@@ -151,7 +161,27 @@ app.event("app_mention", async ({ event, say }) => {
       }
     } catch {}
 
-    // Append the ribbon last so escalation appears before it
+    // For product intent, ensure a clean product link is present on its own line to allow Slack unfurl
+    try {
+      const isProduct = /\bintent=product\b/i.test(ribbon);
+      if (isProduct && citations && citations.length) {
+        const prod = citations.find(c => {
+          try { return new URL(c.url).pathname.startsWith('/products/'); } catch { return false; }
+        });
+        if (prod) {
+          let u;
+          try { u = new URL(prod.url); } catch {}
+          if (u) {
+            const clean = `${u.origin}${u.pathname}`; // strip query for stability
+            if (!text.includes(clean)) {
+              text = `${text}\n\nProduct page: ${clean}`;
+            }
+          }
+        }
+      }
+    } catch {}
+
+    // Append the ribbon last so escalation appears before it, and ensure separation with blank lines
     if ((SHOW_CITES || SHOW_RIBBON) && ribbon) {
       text = `${text}\n\n_${ribbon}_`;
     }
