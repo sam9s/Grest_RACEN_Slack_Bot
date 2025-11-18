@@ -91,6 +91,19 @@ app.view("racen_ingest_url_submit", async ({ ack, body, view, client }) => {
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ url: target, requested_by: userId })
     });
+    if (resp.status === 403) {
+      // User is not allowed to ingest; DM a friendly notice and stop.
+      try {
+        const im = await client.conversations.open({ users: userId });
+        await client.chat.postMessage({
+          channel: im.channel.id,
+          text: "You are not authorized to ingest URLs. Please contact an admin if you need access."
+        });
+      } catch (err) {
+        console.error(`[ingest] failed to DM not-authorized notice`, err);
+      }
+      return;
+    }
     if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
     const data = await resp.json();
     jobId = data.job_id || "";
