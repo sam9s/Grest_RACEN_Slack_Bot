@@ -5,7 +5,7 @@ import { fileURLToPath } from 'url';
 // Load the root project env so local runs pick up tokens and DB settings
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
-dotenv.config({ path: path.resolve(__dirname, '..', 'windsurf-racen-local', '.env') });
+dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
 // ESM-compatible import for CommonJS package
 import boltPkg from "@slack/bolt";
 const { App } = boltPkg;
