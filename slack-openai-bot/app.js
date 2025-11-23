@@ -23,6 +23,22 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const SHOW_CITES = (process.env.SLACK_SHOW_CITATIONS || "1").trim() !== "0";
 const SHOW_RIBBON = (process.env.ANSWER_DEBUG_FLAGS || "0").trim() !== "0";
+const THINKING_ON = (process.env.SLACK_THINKING_ENABLE || "1").trim() !== "0";
+
+function convertMarkdownLinksToSlack(text) {
+  if (!text) return text;
+  const convertLine = (line) =>
+    line.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, (match, label, url) => {
+      const safeLabel = String(label || "").trim();
+      const safeUrl = String(url || "").trim();
+      if (!safeLabel || !safeUrl) return match;
+      return `<${safeUrl}|${safeLabel}>`;
+    });
+  return text
+    .split("\n")
+    .map((ln) => convertLine(ln))
+    .join("\n");
+}
 
 // Answer API endpoint (Python FastAPI) that wraps our evaluated pipeline
 const ANSWER_URL = process.env.RACEN_ANSWER_URL || "http://127.0.0.1:8011";
@@ -209,7 +225,8 @@ function allowlistForPreset(preset) {
   return "/pages/faqs";
 }
 
-app.event("app_mention", async ({ event, say }) => {
+app.event("app_mention", async ({ event, say, client }) => {
+  let thinkingTs = null;
   try {
     const q = (event.text || "").replace(/<@[^>]+>/, "").trim();
     const channel = event.channel;
@@ -243,6 +260,13 @@ app.event("app_mention", async ({ event, say }) => {
       }
     } catch {}
 
+    if (THINKING_ON) {
+      try {
+        const initial = await client.chat.postMessage({ channel, text: "Thinking…", thread_ts: threadId });
+        thinkingTs = initial.ts;
+      } catch {}
+    }
+
     // Call the Python Answer API for grounded answers with citations
     const resp = await fetch(`${ANSWER_URL.replace(/\/$/, "")}/answer`, {
       method: "POST",
@@ -258,12 +282,20 @@ app.event("app_mention", async ({ event, say }) => {
     });
 
     if (!resp.ok) {
-      await say("Info not found");
+      if (thinkingTs) {
+        await client.chat.update({ channel, ts: thinkingTs, text: "Info not found" });
+      } else {
+        await say("Info not found");
+      }
       return;
     }
     const data = await resp.json().catch(() => null);
     if (!data) {
-      await say("Info not found");
+      if (thinkingTs) {
+        await client.chat.update({ channel, ts: thinkingTs, text: "Info not found" });
+      } else {
+        await say("Info not found");
+      }
       return;
     }
 
@@ -323,30 +355,50 @@ app.event("app_mention", async ({ event, say }) => {
     // For product intent, ensure a clean product link is present on its own line to allow Slack unfurl
     try {
       const isProduct = /\bintent=product\b/i.test(ribbon);
-      if (isProduct && citations && citations.length) {
-        const prod = citations.find(c => {
-          try { return new URL(c.url).pathname.startsWith('/products/'); } catch { return false; }
+      const hasCollectionBrowseLink = /https?:\/\/(?:www\.)?grest\.in\/collections\/iphones\b/i.test(text || "");
+      const productBulletMatches = (text || "").match(/- \[[^\]]+\]\(https?:\/\/(?:www\.)?grest\.in\/products\//g) || [];
+      const hasMultipleProductBullets = productBulletMatches.length >= 2;
+      if (isProduct && citations && citations.length && !hasCollectionBrowseLink && !hasMultipleProductBullets) {
+        const grestProducts = citations.filter((c) => {
+          try {
+            const u = new URL(c.url);
+            return /grest\.in$/i.test(u.hostname) && u.pathname.startsWith("/products/");
+          } catch {
+            return false;
+          }
         });
-        if (prod) {
+        let primary = grestProducts.find((c) => c.start_line === 1 && c.end_line === 1);
+        if (!primary && grestProducts.length) {
+          primary = grestProducts[grestProducts.length - 1];
+        }
+        if (primary) {
           let u;
-          try { u = new URL(prod.url); } catch {}
+          try {
+            u = new URL(primary.url);
+          } catch {}
           if (u) {
             const clean = `${u.origin}${u.pathname}`; // strip query for stability
             if (!text.includes(clean)) {
-              text = `${text}\n\nProduct page: ${clean}`;
+              text = `${text}\n\n[Product page](${clean})`;
             }
           }
         }
       }
     } catch {}
 
+    // Convert any markdown-style links in the body into Slack link syntax so labels are clickable.
+    text = convertMarkdownLinksToSlack(text);
+
     // Append the ribbon last so escalation appears before it, and ensure separation with blank lines
     if ((SHOW_CITES || SHOW_RIBBON) && ribbon) {
       text = `${text}\n\n_${ribbon}_`;
     }
 
-    // Reply within the same thread to preserve conversation context for ACK detection
-    await say({ text, thread_ts: threadId });
+    if (thinkingTs) {
+      await client.chat.update({ channel, ts: thinkingTs, text });
+    } else {
+      await say({ text, thread_ts: threadId });
+    }
 
     // Remember this answer for the thread
     if (threadId && answer) {
