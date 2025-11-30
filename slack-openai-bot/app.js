@@ -24,6 +24,10 @@ const MODEL = process.env.OPENAI_MODEL || "gpt-4o-mini";
 const SHOW_CITES = (process.env.SLACK_SHOW_CITATIONS || "1").trim() !== "0";
 const SHOW_RIBBON = (process.env.ANSWER_DEBUG_FLAGS || "0").trim() !== "0";
 const THINKING_ON = (process.env.SLACK_THINKING_ENABLE || "1").trim() !== "0";
+// Shared admin token for internal Slack-triggered operations. Prefer the
+// general RACEN_ADMIN_TOKEN but honour the legacy IPHONE_SPECS_SYNC_TOKEN
+// for backwards compatibility with earlier deployments.
+const ADMIN_TOKEN = (process.env.RACEN_ADMIN_TOKEN || process.env.IPHONE_SPECS_SYNC_TOKEN || "").trim();
 
 function convertMarkdownLinksToSlack(text) {
   if (!text) return text;
@@ -102,10 +106,14 @@ app.view("racen_ingest_url_submit", async ({ ack, body, view, client }) => {
   // Enqueue ingestion
   let jobId = "";
   try {
+    const payload = { url: target, requested_by: userId };
+    if (ADMIN_TOKEN) {
+      payload.token = ADMIN_TOKEN;
+    }
     const resp = await fetch(`${ANSWER_URL.replace(/\/$/, "")}/ingest/url`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ url: target, requested_by: userId })
+      body: JSON.stringify(payload)
     });
     if (resp.status === 403) {
       // User is not allowed to ingest; DM a friendly notice and stop.
@@ -210,6 +218,105 @@ app.view("racen_ingest_url_submit", async ({ ack, body, view, client }) => {
       }
     }
   }, 2000);
+});
+
+// Global shortcut to sync iPhone specs from the Google Sheet into RACEN's DB
+app.shortcut("racen_sync_iphone_specs", async ({ ack, body, client }) => {
+  await ack();
+  await client.views.open({
+    trigger_id: body.trigger_id,
+    view: {
+      type: "modal",
+      callback_id: "racen_sync_iphone_specs_submit",
+      title: { type: "plain_text", text: "Sync iPhone Specs" },
+      submit: { type: "plain_text", text: "Sync" },
+      close: { type: "plain_text", text: "Cancel" },
+      blocks: [
+        {
+          type: "section",
+          text: {
+            type: "mrkdwn",
+            text:
+              "This will sync the latest iPhone prices and specs from the Google Sheet into RACEN's database.\n\nUse this after you update the sheet.",
+          },
+        },
+      ],
+    },
+  });
+});
+
+app.view("racen_sync_iphone_specs_submit", async ({ ack, body, client }) => {
+  await ack();
+  const userId = body.user.id;
+
+  let dm = null;
+  try {
+    const im = await client.conversations.open({ users: userId });
+    dm = im.channel.id;
+  } catch (err) {
+    console.error("[specs-sync] conversations.open failed", err);
+    return;
+  }
+
+  try {
+    const payload = ADMIN_TOKEN ? { token: ADMIN_TOKEN } : {};
+
+    const resp = await fetch(
+      `${ANSWER_URL.replace(/\/$/, "")}/admin/sync/iphone-specs`,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(payload),
+      },
+    );
+
+    if (!resp.ok) {
+      let detail = "";
+      try {
+        const data = await resp.json();
+        detail = data.detail || data.reason || "";
+      } catch {}
+      const msg = `Specs sync failed (HTTP ${resp.status})${
+        detail ? `: ${detail}` : ""
+      }`;
+      await client.chat.postMessage({ channel: dm, text: msg });
+      return;
+    }
+
+    const data = await resp.json();
+    const status = data.status || "";
+    const rows = data.rows_written ?? 0;
+    const dup = Array.isArray(data.duplicate_slugs) ? data.duplicate_slugs : [];
+    const allMissing = Array.isArray(data.slugs_all_missing)
+      ? data.slugs_all_missing
+      : [];
+    const someMissing = Array.isArray(data.slugs_some_missing)
+      ? data.slugs_some_missing
+      : [];
+
+    let text = `iPhone specs sync status: ${status}\nRows written: ${rows}`;
+    if (dup.length) {
+      text += `\nDuplicate slugs (fix in sheet and retry): ${dup.join(", ")}`;
+    }
+    if (allMissing.length) {
+      text += `\nNo prices set for slugs: ${allMissing.join(", ")}`;
+    }
+    if (someMissing.length) {
+      text += `\nSome prices missing for slugs: ${someMissing.join(", ")}`;
+    }
+
+    await client.chat.postMessage({ channel: dm, text });
+  } catch (err) {
+    console.error("[specs-sync] request failed", err);
+    try {
+      await client.chat.postMessage({
+        channel: dm,
+        text: `Specs sync failed: ${err}`,
+      });
+    } catch (innerErr) {
+      console.error("[specs-sync] failed to DM error", innerErr);
+    }
+  }
 });
 
 function allowlistForPreset(preset) {
